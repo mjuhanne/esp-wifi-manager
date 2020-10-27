@@ -84,6 +84,8 @@ void dns_server(void *pvParameters) {
     ip4_addr_t ip_resolved;
     inet_pton(AF_INET, DEFAULT_AP_IP, &ip_resolved);
 
+    char * str_ip = ip4addr_ntoa(&ip_resolved);
+    ESP_LOGI(TAG, "DNS server listening on address: %s", str_ip);
 
     /* Create UDP socket */
     socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -93,9 +95,15 @@ void dns_server(void *pvParameters) {
     }
 
     /* Bind to port 53 (typical DNS Server port) */
+#ifdef ESP32
     esp_netif_ip_info_t ip;
     esp_netif_t* netif_sta = wifi_manager_get_esp_netif_sta();
     ESP_ERROR_CHECK(esp_netif_get_ip_info(netif_sta, &ip));
+#else
+    tcpip_adapter_ip_info_t ip;
+    ESP_ERROR_CHECK(tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip));
+#endif
+
     ra.sin_family = AF_INET;
     ra.sin_addr.s_addr = ip.ip.addr;
     ra.sin_port = htons(53);

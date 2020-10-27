@@ -1,14 +1,20 @@
-# What is esp32-wifi-manager?
+# What is esp-wifi-manager?
+
+
+## Changes for ESP8266
+- Component config -> mbedTLS -> TLS maximum incoming fragment length -> 8192
+- Component config -> HTTP server -> Max HTTP Request Header Length -> 1024
+
 
 ### Build status [![Build Status](https://travis-ci.com/tonyp7/esp32-wifi-manager.svg?branch=master)](https://travis-ci.com/tonyp7/esp32-wifi-manager)
 
-*esp32-wifi-manager* is a pure C esp-idf component for ESP32 that enables easy management of wifi networks through a web portal.
+*esp-wifi-manager* is a pure C esp-idf component for ESP32/ESP8266 that enables easy management of wifi networks and mqtt server through a web portal.
 
-*esp32-wifi-manager* is is an all in one wifi scanner, http server & dns daemon living in the least amount of RAM possible.
+*esp-wifi-manager* is is an all in one wifi scanner, http server & MQTT client and dns daemon living in the least amount of RAM possible.
 
-*esp32-wifi-manager* will automatically attempt to re-connect to a previously saved network on boot, and if it cannot find a saved wifi it will start its own access point through which you can manage and connect to wifi networks. Upon a succesful connection, the software will shutdown the access point automatically after some time (1 minute by default).
+*esp-wifi-manager* will automatically attempt to re-connect to a previously saved network on boot, and if it cannot find a saved wifi it will start its own access point through which you can manage and connect to wifi networks. After this, one can configure the MQTT server. Upon a succesful connection, the software will shutdown the access point automatically after some time (1 minute by default).
 
-*esp32-wifi-manager* compiles with esp-idf 4.2 and above. See [Getting Started](#getting-started) to guide you through your first setup.
+*esp-wifi-manager* compiles with esp-idf 4.2 and above. See [Getting Started](#getting-started) to guide you through your first setup.
 
 # Content
  - [Demo](#demo)

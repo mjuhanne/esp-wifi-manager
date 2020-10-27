@@ -83,7 +83,7 @@ char *ip_info_json = NULL;
 wifi_config_t* wifi_manager_config_sta = NULL;
 
 /* @brief Array of callback function pointers */
-void (**cb_ptr_arr)(void*) = NULL;
+static void (**cb_ptr_arr)(void*) = NULL;
 
 /* @brief tag used for ESP serial console messages */
 static const char TAG[] = "wifi_manager";
@@ -91,11 +91,13 @@ static const char TAG[] = "wifi_manager";
 /* @brief task handle for the main wifi_manager task */
 static TaskHandle_t task_wifi_manager = NULL;
 
+#ifdef ESP32
 /* @brief netif object for the STATION */
 static esp_netif_t* esp_netif_sta = NULL;
 
 /* @brief netif object for the ACCESS POINT */
 static esp_netif_t* esp_netif_ap = NULL;
+#endif
 
 /**
  * The actual WiFi settings in use
@@ -141,6 +143,19 @@ const int WIFI_MANAGER_SCAN_BIT = BIT7;
 /* @brief When set, means user requested for a disconnect */
 const int WIFI_MANAGER_REQUEST_DISCONNECT_BIT = BIT8;
 
+/* @brief When set, Our AP is shutdown when target AP is connected and after timer period is elapsed */
+const int WIFI_MANAGER_AUTO_AP_SHUTDOWN = BIT9;
+
+/* @brief When set, Our AP is started when maximum STA reconnect failures is reached */
+bool auto_ap_start_after_failure;
+
+/* @brief If set, AP SSID will be appended with last 3 bytes of MAC address to better distinguish from other ESP APs */
+bool ap_ssid_mac;
+
+/* @brief Storage for Dynamic Access Point name. We don't use the one in wifisettings because it will be overwritten when loading settings from NVS */
+char * ap_ssid = NULL;
+
+
 
 
 void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
@@ -173,7 +188,7 @@ void wifi_manager_disconnect_async(){
 }
 
 
-void wifi_manager_start(){
+void wifi_manager_start( const char * ssid, bool append_ssid_with_mac ){
 
 	/* disable the default wifi logging */
 	esp_log_level_set("wifi", ESP_LOG_NONE);
@@ -192,7 +207,11 @@ void wifi_manager_start(){
 	wifi_manager_clear_ip_info_json();
 	wifi_manager_config_sta = (wifi_config_t*)malloc(sizeof(wifi_config_t));
 	memset(wifi_manager_config_sta, 0x00, sizeof(wifi_config_t));
+#ifdef ESP32
 	memset(&wifi_settings.sta_static_ip_config, 0x00, sizeof(esp_netif_ip_info_t));
+#else
+	memset(&wifi_settings.sta_static_ip_config, 0x00, sizeof(tcpip_adapter_ip_info_t));
+#endif
 	cb_ptr_arr = malloc(sizeof(void (*)(void*)) * WM_MESSAGE_CODE_COUNT);
 	for(int i=0; i<WM_MESSAGE_CODE_COUNT; i++){
 		cb_ptr_arr[i] = NULL;
@@ -201,6 +220,21 @@ void wifi_manager_start(){
 	wifi_manager_sta_ip = (char*)malloc(sizeof(char) * IP4ADDR_STRLEN_MAX);
 	wifi_manager_safe_update_sta_ip_string((uint32_t)0);
 	wifi_manager_event_group = xEventGroupCreate();
+
+	if (ssid)  {
+		ap_ssid = (char*)malloc(strlen(ssid)+1+7); // extra space for possible MAC address
+		strcpy(ap_ssid, ssid);
+		strncpy((char*)wifi_settings.ap_ssid, ssid, MAX_SSID_SIZE);
+	} else {
+		// use default
+		ap_ssid = (char*)malloc(strlen((char*)wifi_settings.ap_ssid)+1+7); // extra space for possible MAC address
+	}
+	ap_ssid_mac = append_ssid_with_mac;
+
+	// by default start AP after max STA connect reties have reached 
+	auto_ap_start_after_failure = true;
+	// by default shutdown AP after STA connected and timer period is elapsed
+	xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_AUTO_AP_SHUTDOWN);
 
 	/* create timer for to keep track of retries */
 	wifi_manager_retry_timer = xTimerCreate( NULL, pdMS_TO_TICKS(WIFI_MANAGER_RETRY_TIMER), pdFALSE, ( void * ) 0, wifi_manager_timer_retry_cb);
@@ -364,6 +398,9 @@ bool wifi_manager_fetch_wifi_sta_config(){
 		}
 		memcpy(&wifi_settings, buff, sz);
 
+		// restore AP name
+	    strncpy((char*)wifi_settings.ap_ssid, ap_ssid, MAX_SSID_SIZE );
+
 		free(buff);
 		nvs_close(handle);
 		nvs_sync_unlock();
@@ -412,17 +449,28 @@ void wifi_manager_generate_ip_info_json(update_reason_code_t update_reason_code)
 		size_t remaining = JSON_IP_INFO_SIZE - ip_info_json_len;
 		if(update_reason_code == UPDATE_CONNECTION_OK){
 			/* rest of the information is copied after the ssid */
-			esp_netif_ip_info_t ip_info;
-			ESP_ERROR_CHECK(esp_netif_get_ip_info(esp_netif_sta, &ip_info));
 
 			char ip[IP4ADDR_STRLEN_MAX]; /* note: IP4ADDR_STRLEN_MAX is defined in lwip */
 			char gw[IP4ADDR_STRLEN_MAX];
 			char netmask[IP4ADDR_STRLEN_MAX];
-
+#ifdef ESP32
+			esp_netif_ip_info_t ip_info;
+			ESP_ERROR_CHECK(esp_netif_get_ip_info(esp_netif_sta, &ip_info));
 			esp_ip4addr_ntoa(&ip_info.ip, ip, IP4ADDR_STRLEN_MAX);
 			esp_ip4addr_ntoa(&ip_info.gw, gw, IP4ADDR_STRLEN_MAX);
 			esp_ip4addr_ntoa(&ip_info.netmask, netmask, IP4ADDR_STRLEN_MAX);
+#else
+			tcpip_adapter_ip_info_t ip_info;
+			ESP_ERROR_CHECK(tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip_info));
+			char * str;
 
+			str = ip4addr_ntoa(&ip_info.ip);
+			strcpy(ip, str);
+			str = ip4addr_ntoa(&ip_info.gw);
+			strcpy(gw, str);
+			str = ip4addr_ntoa(&ip_info.netmask);
+			strcpy(netmask, str);
+#endif
 
 			snprintf( (ip_info_json + ip_info_json_len), remaining, ip_info_json_format,
 					ip,
@@ -504,11 +552,10 @@ void wifi_manager_safe_update_sta_ip_string(uint32_t ip){
 
 	if(wifi_manager_lock_sta_ip_string(portMAX_DELAY)){
 
-		esp_ip4_addr_t ip4;
+		char * str_ip;
+		ip4_addr_t ip4;
 		ip4.addr = ip;
-
-		char str_ip[IP4ADDR_STRLEN_MAX];
-		esp_ip4addr_ntoa(&ip4, str_ip, IP4ADDR_STRLEN_MAX);
+		str_ip = ip4addr_ntoa(&ip4);
 
 		strcpy(wifi_manager_sta_ip, str_ip);
 
@@ -545,12 +592,16 @@ char* wifi_manager_get_ap_list_json(){
 	return accessp_json;
 }
 
+struct wifi_settings_t * wifi_manager_get_wifi_settings() {
+	return &wifi_settings;
+}
 
 /**
  * @brief Standard wifi event handler
  */
 static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data){
 
+    ESP_LOGD(TAG, "wifi_manager_event_handler Stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
 	if (event_base == WIFI_EVENT){
 
@@ -586,7 +637,7 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 		 * arise. Upon receiving this event, the event task will initialize the LwIP network interface (netif).
 		 * Generally, the application event callback needs to call esp_wifi_connect() to connect to the configured AP. */
 		case WIFI_EVENT_STA_START:
-			ESP_LOGI(TAG, "");
+			ESP_LOGI(TAG, "WIFI_EVENT_STA_START");
 			break;
 
 		/* If esp_wifi_stop() returns ESP_OK and the current Wi-Fi mode is Station or AP+Station, then this event will arise.
@@ -755,6 +806,24 @@ wifi_config_t* wifi_manager_get_wifi_sta_config(){
 }
 
 
+void wifi_manager_erase_config() {
+
+	/* erase configuration */
+	if(wifi_manager_config_sta){
+		memset(wifi_manager_config_sta, 0x00, sizeof(wifi_config_t));
+	}
+
+	/* regenerate json status */
+	if(wifi_manager_lock_json_buffer( portMAX_DELAY )){
+		wifi_manager_generate_ip_info_json( UPDATE_USER_DISCONNECT );
+		wifi_manager_unlock_json_buffer();
+	}
+
+	/* save NVS memory */
+	wifi_manager_save_sta_config();
+}
+
+
 void wifi_manager_connect_async(){
 	/* in order to avoid a false positive on the front end app we need to quickly flush the ip json
 	 * There'se a risk the front end sees an IP or a password error when in fact
@@ -765,6 +834,40 @@ void wifi_manager_connect_async(){
 		wifi_manager_unlock_json_buffer();
 	}
 	wifi_manager_send_message(WM_ORDER_CONNECT_STA, (void*)CONNECTION_REQUEST_USER);
+}
+
+void wifi_manager_start_ap_shutdown() {
+	ESP_LOGI(TAG,"Start AP shutdown timer...");
+	TickType_t t = pdMS_TO_TICKS( WIFI_MANAGER_SHUTDOWN_AP_TIMER );
+
+	/* if for whatever reason user configured the shutdown timer to be less than 1 tick, the AP is stopped straight away */
+	if(t > 0){
+		xTimerStart( wifi_manager_shutdown_ap_timer, (TickType_t)0 );
+	}
+	else{
+		wifi_manager_send_message(WM_ORDER_STOP_AP, (void*)NULL);
+	}	
+}
+
+void wifi_manager_set_auto_ap_shutdown( bool enable ) {
+	ESP_LOGI(TAG,"Set AP auto shutdown to %s", enable ? "enabled" : "disabled");
+	if (enable) {
+		xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_AUTO_AP_SHUTDOWN);
+		if(xEventGroupGetBits(wifi_manager_event_group) & WIFI_MANAGER_AP_STARTED_BIT) {
+			wifi_manager_start_ap_shutdown();
+		}
+
+	} else {
+		xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_AUTO_AP_SHUTDOWN);
+		if(xTimerIsTimerActive(wifi_manager_shutdown_ap_timer) == pdTRUE ){
+			xTimerStop( wifi_manager_shutdown_ap_timer, (TickType_t)0 );
+		}
+	}
+}
+
+void wifi_manager_set_auto_ap_start_after_failure( bool enable ) {
+	ESP_LOGI(TAG,"Set AP auto start (after conn failure) to %s", enable ? "enabled" : "disabled");
+	auto_ap_start_after_failure=enable;
 }
 
 
@@ -880,6 +983,7 @@ void wifi_manager_set_callback(message_code_t message_code, void (*func_ptr)(voi
 	}
 }
 
+#ifdef ESP32
 esp_netif_t* wifi_manager_get_esp_netif_ap(){
 	return esp_netif_ap;
 }
@@ -887,6 +991,8 @@ esp_netif_t* wifi_manager_get_esp_netif_ap(){
 esp_netif_t* wifi_manager_get_esp_netif_sta(){
 	return esp_netif_sta;
 }
+#endif
+
 
 void wifi_manager( void * pvParameters ){
 
@@ -898,13 +1004,19 @@ void wifi_manager( void * pvParameters ){
 
 
 	/* initialize the tcp stack */
+#ifdef ESP32
 	ESP_ERROR_CHECK(esp_netif_init());
+#else
+	tcpip_adapter_init();
+#endif
 
 	/* event loop for the wifi driver */
 	ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+#ifdef ESP32
 	esp_netif_sta = esp_netif_create_default_wifi_sta();
 	esp_netif_ap = esp_netif_create_default_wifi_ap();
+#endif
 
 
 	/* default wifi config */
@@ -913,10 +1025,15 @@ void wifi_manager( void * pvParameters ){
 	ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
 	/* event handler for the connection */
+#ifdef ESP32
     esp_event_handler_instance_t instance_wifi_event;
     esp_event_handler_instance_t instance_ip_event;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_manager_event_handler, NULL,&instance_wifi_event));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_manager_event_handler, NULL,&instance_ip_event));
+#else
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_manager_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_manager_event_handler, NULL));
+#endif
 
 
 	/* SoftAP - Wifi Access Point configuration setup */
@@ -943,6 +1060,7 @@ void wifi_manager( void * pvParameters ){
 	
 
 	/* DHCP AP configuration */
+#ifdef ESP32
 	esp_netif_dhcps_stop(esp_netif_ap); /* DHCP client/server must be stopped before setting new IP information. */
 	esp_netif_ip_info_t ap_ip_info;
 	memset(&ap_ip_info, 0x00, sizeof(ap_ip_info));
@@ -951,6 +1069,31 @@ void wifi_manager( void * pvParameters ){
 	inet_pton(AF_INET, DEFAULT_AP_NETMASK, &ap_ip_info.netmask);
 	ESP_ERROR_CHECK(esp_netif_set_ip_info(esp_netif_ap, &ap_ip_info));
 	ESP_ERROR_CHECK(esp_netif_dhcps_start(esp_netif_ap));
+#else
+	tcpip_adapter_dhcps_stop(TCPIP_ADAPTER_IF_AP);
+	tcpip_adapter_ip_info_t ap_ip_info;
+	memset(&ap_ip_info, 0x00, sizeof(tcpip_adapter_ip_info_t));
+	inet_pton(AF_INET, DEFAULT_AP_IP, &ap_ip_info.ip);
+	inet_pton(AF_INET, DEFAULT_AP_GATEWAY, &ap_ip_info.gw);
+	inet_pton(AF_INET, DEFAULT_AP_NETMASK, &ap_ip_info.netmask);
+	ESP_ERROR_CHECK(tcpip_adapter_set_ip_info(TCPIP_ADAPTER_IF_AP, &ap_ip_info));
+	ESP_ERROR_CHECK(tcpip_adapter_dhcps_start(TCPIP_ADAPTER_IF_AP));
+#endif
+
+	// Network interface is up. We can now fetch the MAC address
+	if (ap_ssid_mac) {
+	    // Append SSID with last 3 bytes of MAC address
+	    uint8_t mac[6];
+	    ESP_ERROR_CHECK(esp_wifi_get_mac(ESP_IF_WIFI_STA, mac));
+	    sprintf(ap_ssid,"%s-%2x%2x%2x", 
+	    	(char*)ap_config.ap.ssid,
+	        mac[3],
+    	    mac[4],
+        	mac[5]);
+	    strncpy((char*)ap_config.ap.ssid, ap_ssid, MAX_SSID_SIZE );
+	    strncpy((char*)wifi_settings.ap_ssid, ap_ssid, MAX_SSID_SIZE );
+	}
+	ESP_LOGI(TAG,"AP SSID: %s", ap_config.ap.ssid);
 
 	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
 	ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &ap_config));
@@ -973,13 +1116,18 @@ void wifi_manager( void * pvParameters ){
 		.show_hidden = true
 	};
 
+
+	/* AP will be shutdown by default after target AP is connected */
+	wifi_manager_set_auto_ap_shutdown(true);
+
 	/* enqueue first event: load previous config */
 	wifi_manager_send_message(WM_ORDER_LOAD_AND_RESTORE_STA, NULL);
-
 
 	/* main processing loop */
 	for(;;){
 		xStatus = xQueueReceive( wifi_manager_queue, &msg, portMAX_DELAY );
+
+	    ESP_LOGD(TAG, "wifi_manager queue loop - free heap %d, stack: %d", esp_get_free_heap_size(), uxTaskGetStackHighWaterMark(NULL));
 
 		if( xStatus == pdPASS ){
 			switch(msg.code){
@@ -1015,9 +1163,20 @@ void wifi_manager( void * pvParameters ){
 
 				/* if a scan is already in progress this message is simply ignored thanks to the WIFI_MANAGER_SCAN_BIT uxBit */
 				uxBits = xEventGroupGetBits(wifi_manager_event_group);
-				if(! (uxBits & WIFI_MANAGER_SCAN_BIT) ){
-					xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_SCAN_BIT);
-					ESP_ERROR_CHECK(esp_wifi_scan_start(&scan_config, false));
+				if (! (uxBits & WIFI_MANAGER_SCAN_BIT) ){
+					if (! (uxBits & ( WIFI_MANAGER_REQUEST_STA_CONNECT_BIT | WIFI_MANAGER_REQUEST_RESTORE_STA_BIT) ) ) {
+						esp_err_t res = esp_wifi_scan_start(&scan_config, false);
+						if (res==ESP_ERR_WIFI_STATE) {
+							// This might happen when connect retry is attempted while AP scan starts.. Just ignore it
+							ESP_LOGE(TAG,"Wifi still in connect mode whan starting scan!");
+						} else {
+							// handle other errors
+							ESP_ERROR_CHECK(res);
+							xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_SCAN_BIT);
+						}
+					} else {
+						// Cannot scan while connecting to AP
+					}
 				}
 
 				/* callback */
@@ -1154,22 +1313,12 @@ void wifi_manager( void * pvParameters ){
 					/* user manually requested a disconnect so the lost connection is a normal event. Clear the flag and restart the AP */
 					xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_REQUEST_DISCONNECT_BIT);
 
-					/* erase configuration */
-					if(wifi_manager_config_sta){
-						memset(wifi_manager_config_sta, 0x00, sizeof(wifi_config_t));
-					}
-
-					/* regenerate json status */
-					if(wifi_manager_lock_json_buffer( portMAX_DELAY )){
-						wifi_manager_generate_ip_info_json( UPDATE_USER_DISCONNECT );
-						wifi_manager_unlock_json_buffer();
-					}
-
-					/* save NVS memory */
-					wifi_manager_save_sta_config();
+					wifi_manager_erase_config();
 
 					/* start SoftAP */
-					wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+					if (!(uxBits & WIFI_MANAGER_AP_STARTED_BIT)) {
+						wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+					}
 				}
 				else{
 					/* lost connection ? */
@@ -1184,8 +1333,9 @@ void wifi_manager( void * pvParameters ){
 					/* if it was a restore attempt connection, we clear the bit */
 					xEventGroupClearBits(wifi_manager_event_group, WIFI_MANAGER_REQUEST_RESTORE_STA_BIT);
 
-					/* if the AP is not started, we check if we have reached the threshold of failed attempt to start it */
-					if(! (uxBits & WIFI_MANAGER_AP_STARTED_BIT) ){
+					/* if the AP is not started and we allow AP kick start after failure, 
+					we check if we have reached the threshold of failed attempt to start it */
+					if ( (!(uxBits & WIFI_MANAGER_AP_STARTED_BIT)) && (auto_ap_start_after_failure) ) {
 
 						/* if the nunber of retries is below the threshold to start the AP, a reconnection attempt is made
 						 * This way we avoid restarting the AP directly in case the connection is mementarily lost */
@@ -1195,6 +1345,8 @@ void wifi_manager( void * pvParameters ){
 						else{
 							/* In this scenario the connection was lost beyond repair: kick start the AP! */
 							retries = 0;
+
+							ESP_LOGI(TAG, "Too many STA connect retries -> start AP");
 
 							/* start SoftAP */
 							wifi_manager_send_message(WM_ORDER_START_AP, NULL);
@@ -1242,9 +1394,8 @@ void wifi_manager( void * pvParameters ){
 					/* stop DNS */
 					dns_server_stop();
 
-					/* restart HTTP daemon */
+					/* stop HTTP daemon */
 					http_app_stop();
-					http_app_start(false);
 
 					/* callback */
 					if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])(NULL);
@@ -1285,21 +1436,12 @@ void wifi_manager( void * pvParameters ){
 				/* bring down DNS hijack */
 				dns_server_stop();
 
-				/* start the timer that will eventually shutdown the access point
+				/* start the timer that will eventually shutdown the access point if auto shutdown is enabled
 				 * We check first that it's actually running because in case of a boot and restore connection
 				 * the AP is not even started to begin with.
 				 */
-				if(uxBits & WIFI_MANAGER_AP_STARTED_BIT){
-					TickType_t t = pdMS_TO_TICKS( WIFI_MANAGER_SHUTDOWN_AP_TIMER );
-
-					/* if for whatever reason user configured the shutdown timer to be less than 1 tick, the AP is stopped straight away */
-					if(t > 0){
-						xTimerStart( wifi_manager_shutdown_ap_timer, (TickType_t)0 );
-					}
-					else{
-						wifi_manager_send_message(WM_ORDER_STOP_AP, (void*)NULL);
-					}
-
+				if ( (uxBits & WIFI_MANAGER_AP_STARTED_BIT) && (uxBits & WIFI_MANAGER_AUTO_AP_SHUTDOWN) ) {
+					wifi_manager_start_ap_shutdown();
 				}
 
 				/* callback and free memory allocated for the void* param */

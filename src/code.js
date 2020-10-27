@@ -23,6 +23,7 @@ function docReady(fn) {
 var selectedSSID = "";
 var refreshAPInterval = null;
 var checkStatusInterval = null;
+var checkMqttStatusInterval = null;
 
 function stopCheckStatusInterval() {
   if (checkStatusInterval != null) {
@@ -38,6 +39,13 @@ function stopRefreshAPInterval() {
   }
 }
 
+function stopCheckMqttStatusInterval() {
+  if (checkMqttStatusInterval != null) {
+    clearInterval(checkMqttStatusInterval);
+    checkMqttStatusInterval = null;
+  }
+}
+
 function startCheckStatusInterval() {
   checkStatusInterval = setInterval(checkStatus, 950);
 }
@@ -46,12 +54,33 @@ function startRefreshAPInterval() {
   refreshAPInterval = setInterval(refreshAP, 3800);
 }
 
+function startCheckMqttStatusInterval() {
+  checkMqttStatusInterval = setInterval(checkMqttStatus, 950);
+}
+
+
 docReady(async function () {
+
+  gel("mqtt-details-wrap").style.display = "none";
+  gel("mqtt-connect-wrap").style.display = "block";
+  gel("mqtt-connecting").style.display = "none";
+  gel("mqtt-connect-fail").style.display = "none";
+  gel("mqtt-details").style.display = "none";
+
   gel("wifi-status").addEventListener(
     "click",
     () => {
       wifi_div.style.display = "none";
-      document.getElementById("connect-details").style.display = "block";
+      gel("connect-details").style.display = "block";
+    },
+    false
+  );
+
+  gel("mqtt-status").addEventListener(
+    "click",
+    () => {
+      wifi_div.style.display = "none";
+      gel("mqtt-details").style.display = "block";
     },
     false
   );
@@ -90,6 +119,12 @@ docReady(async function () {
     connect_manual_div.style.display = "none";
     wifi_div.style.display = "block";
   }
+
+  function MqttCancel() {
+    gel("mqtt-details").style.display = "none";
+    wifi_div.style.display = "block";
+  }
+
 
   gel("cancel").addEventListener("click", cancel, false);
 
@@ -181,10 +216,70 @@ docReady(async function () {
     wifi_div.style.display = "block";
   });
 
+  gel("mqtt-cancel").addEventListener("click", MqttCancel, false);
+  gel("mqtt-join").addEventListener("click", performMqttConnect, false);
+
+  gel("mqtt-fail-ok").addEventListener(
+    "click",
+    () => {
+      gel("mqtt-connect-fail").style.display = "none";
+      gel("mqtt-connect").style.display = "block";
+    },
+    false
+  );
+
+  gel("mqtt-disconnect").addEventListener(
+    "click",
+    () => {
+      gel("diag-mqtt-disconnect").style.display = "block";
+      gel("mqtt-details-wrap").classList.add("blur");
+    },
+    false
+  );
+
+  gel("mqtt-no-disconnect").addEventListener(
+    "click",
+    () => {
+      gel("diag-mqtt-disconnect").style.display = "none";
+      gel("mqtt-details-wrap").classList.remove("blur");
+    },
+    false
+  );
+
+  gel("mqtt-yes-disconnect").addEventListener("click", async () => {
+    gel("diag-mqtt-disconnect").style.display = "none";
+    gel("mqtt-details-wrap").classList.remove("blur");
+
+    await fetch("connect.json", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Custom-mqtt-uri": "DISCONNECT",
+      },
+      body: { timestamp: Date.now() },
+    });
+
+    gel("mqtt-details-wrap").style.display = "none";
+    gel("mqtt-connect-wrap").style.display = "block";
+  });
+
+  gel("mqtt-ok-details").addEventListener(
+    "click",
+    () => {
+      gel("mqtt-details").style.display = "none";
+      wifi_div.style.display = "block";
+    },
+    false
+  );
+
+
+
+
   //first time the page loads: attempt get the connection status and start the wifi scan
   await refreshAP();
   startCheckStatusInterval();
   startRefreshAPInterval();
+  startCheckMqttStatusInterval();
 });
 
 async function performConnect(conntype) {
@@ -204,6 +299,11 @@ async function performConnect(conntype) {
   } else {
     pwd = gel("pwd").value;
   }
+
+  // bypass bug in ESP http parsing (header value cannot be empty)
+  if (pwd == "")
+    pwd = "__EMPTY__";
+
   //reset connection
   gel("loading").style.display = "block";
   gel("connect-success").style.display = "none";
@@ -215,7 +315,7 @@ async function performConnect(conntype) {
   connect_manual_div.style.display = "none";
   connect_wait_div.style.display = "block";
 
-  await fetch("connect.json", {
+  let response = await fetch("connect.json", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -224,11 +324,68 @@ async function performConnect(conntype) {
     },
     body: { timestamp: Date.now() },
   });
+  if (!response.ok) {
+      // this shouldn't happen. Exit connect wait screen
+      console.info("PerformConnect failed!");
+      connect_wait_div.style.display = "none";
+      wifi_div.style.display = "block";
+  }
 
   //now we can re-set the intervals regardless of result
   startCheckStatusInterval();
   startRefreshAPInterval();
 }
+
+
+async function performMqttConnect() {
+
+  var mqtt_uri, mqtt_username, mqtt_pwd;
+  mqtt_uri = gel("mqtt_uri").value;
+  mqtt_username = gel("mqtt_username").value;
+  mqtt_pwd = gel("mqtt_pwd").value;
+
+  if (mqtt_uri == "")
+    return;
+  // bypass bug in ESP http parsing (header value cannot be empty)
+  if (mqtt_username == "")
+    mqtt_username = "__EMPTY__";
+  if (mqtt_pwd == "")
+    mqtt_pwd = "__EMPTY__";
+
+  document.querySelector("#mqtt-connected-to div div span").textContent =
+    mqtt_uri;
+
+  document.querySelector(
+    "#mqtt-details-wrap h1"
+  ).textContent = mqtt_uri;
+
+  gel("mqtt-connect").style.display = "none";
+  gel("mqtt-connecting").style.display = "block";
+  gel("mqtt-connect-fail").style.display = "none";
+
+
+  gel("mqtt-ok-details").disabled = true;
+
+  let response = await fetch("connect.json", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Custom-mqtt-uri": mqtt_uri,
+      "X-Custom-mqtt-username": mqtt_username,
+      "X-Custom-mqtt-pwd": mqtt_pwd,
+    },
+    body: { timestamp: Date.now() },
+  });
+  if (!response.ok) {
+      // this shouldn't happen. Exit connect wait screen
+      console.info("PerformMqttConnect failed!");
+      gel("mqtt-connect").style.display = "block";
+      gel("mqtt-connecting").style.display = "none";
+  } else {
+    startCheckMqttStatusInterval();
+  }
+}
+
 
 function rssiToIcon(rssi) {
   if (rssi >= -60) {
@@ -318,14 +475,19 @@ async function checkStatus(url = "status.json") {
             gel("ok-connect").disabled = false;
 
             //update wait screen
-            gel("loading").display = "none";
+            gel("loading").style.display = "none";
             gel("connect-fail").style.display = "block";
             gel("connect-success").style.display = "none";
             break;
+          case 2: // user disconnnect
+          case 3: // lost connection
+            gel("mqtt-status").style.display = "none";
+            break;
+
         }
       } else if (data.hasOwnProperty("urc") && data["urc"] === 0) {
         console.info("Connection established");
-        //ESP32 is already connected to a wifi without having the user do anything
+        //ESP is already connected to a wifi server without having the user do anything
         if (
           gel("wifi-status").style.display == "" ||
           gel("wifi-status").style.display == "none"
@@ -338,15 +500,119 @@ async function checkStatus(url = "status.json") {
           gel("netmask").textContent = data["netmask"];
           gel("gw").textContent = data["gw"];
           gel("wifi-status").style.display = "block";
+          gel("mqtt-status").style.display = "block";
         }
-      }
-    } else if (data.hasOwnProperty("urc") && data["urc"] === 2) {
-      console.log("Manual disconnect requested...");
-      if (gel("wifi-status").style.display == "block") {
-        gel("wifi-status").style.display = "none";
+      } else if (data.hasOwnProperty("urc") && ((data["urc"] === 2) || (data["urc"] === 3))) {
+        console.log("Wifi in disconnected state");
+        if (gel("wifi-status").style.display == "block") {
+          gel("wifi-status").style.display = "none";
+        }
+        if (gel("mqtt-status").style.display == "block") {
+          gel("mqtt-status").style.display = "none";
+        }
       }
     }
   } catch (e) {
     console.info("Was not able to fetch /status.json");
   }
 }
+
+async function checkMqttStatus(url = "mqtt_status.json") {
+  try {
+    var response = await fetch(url);
+    var data = await response.json();
+    if (data && data.hasOwnProperty("uri")) {
+      if (data["uri"] === "") {
+      } else {
+        // Attempting connection
+        switch (data["urc"]) {
+          case 0:
+            console.info("MQTT not yet configured");
+            document.querySelector(
+              "#mqtt-connected-status div"
+            ).textContent = " (Not configured)";
+            document.querySelector(
+              "#mqtt-details-wrap h2"
+            ).textContent = "Not configured";
+            document.querySelector(
+              "#mqtt-details-wrap h2"
+            ).textContent = "";
+          case 1:
+            console.info("Got MQTT connection!");
+            document.querySelector(
+              "#mqtt-connected-to div div span"
+            ).textContent = data["uri"];
+            document.querySelector(
+              "#mqtt-connected-status"
+            ).textContent = " (Connected)";
+            document.querySelector(
+              "#mqtt-details-wrap header h1"
+            ).textContent = data["uri"];            
+            document.querySelector(
+              "#mqtt-details-wrap h2"
+            ).textContent = "Connected";
+
+            //update wait screen
+            gel("mqtt-connect-wrap").style.display = "none";
+            gel("mqtt-details-wrap").style.display = "block";
+            //gel("mqtt-connect-fail").style.display = "none";
+            gel("mqtt-ok-details").disabled = false;
+            gel("mqtt-disconnect").disabled = false;
+            break;
+          case 2:
+            console.info("User disconnect");
+            document.querySelector(
+              "#mqtt-connected-to div div span"
+            ).textContent = data["uri"];
+            document.querySelector(
+              "#mqtt-connected-status"
+            ).textContent = " (Disconnected)";
+            document.querySelector(
+              "#mqtt-details-wrap h2"
+            ).textContent = "User disconnect";
+            gel("mqtt-connect-wrap").style.display = "block";
+            gel("mqtt-connect").style.display = "block";
+            gel("mqtt-connecting").style.display = "none";
+            gel("mqtt-connect-fail").style.display = "none";
+            gel("mqtt-details-wrap").style.display = "none";
+            //gel("mqtt-ok-details").disabled = false;
+            //gel("mqtt-disconnect").disabled = true;
+
+            stopCheckMqttStatusInterval();
+
+            break;
+          case 3: // attempt failed
+            document.querySelector(
+              "#mqtt-connect-fail h2"
+            ).textContent = data["error"];
+            // fall through
+          case 4: // conn lost
+            console.info("Disconnected");
+            document.querySelector(
+              "#mqtt-connected-to div div span"
+            ).textContent = data["uri"];
+            document.querySelector(
+              "#mqtt-connected-status"
+            ).textContent = " (Disconnected)";
+            document.querySelector(
+              "#mqtt-details-wrap h2"
+            ).textContent = "Disconnected";
+
+            //update wait screen
+            gel("mqtt-connecting").style.display = "none";
+            gel("mqtt-connect-fail").style.display = "block";
+            gel("mqtt-fail-ok").disabled = false;
+            //gel("mqtt-disconnect").disabled = true;
+            gel("mqtt-details-wrap").style.display = "none";
+
+            stopCheckMqttStatusInterval();
+
+            break;
+        }
+      }
+    }
+  } catch (e) {
+    console.info("Was not able to fetch /mqtt_status.json");
+  }
+}
+

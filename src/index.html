@@ -6,7 +6,7 @@
 		<meta name="apple-mobile-web-app-capable" content="yes" />
 		<link rel="stylesheet" href="style.css">
 		<script async src="code.js"></script>
-		<title>esp32-wifi-manager</title>
+		<title>esp-wifi-manager</title>
 	</head>
 	<body>
 		<div id="app">
@@ -19,6 +19,12 @@
 						<h2>Connected to:</h2>
 						<section id="connected-to">
 							<div class="ape"><div class="w0"><div class="pw"><span></span></div></div></div>
+						</section>
+					</div>
+					<div id="mqtt-status">
+						<h2>MQTT server:</h2>
+						<section id="mqtt-connected-to">
+							<div class="ape"><div class=""><span>CLICK TO CONFIGURE</span><span id="mqtt-connected-status"></span></div></div>
 						</section>
 					</div>
 					<h2>Manual connect</h2>
@@ -34,7 +40,7 @@
 					<header>
 						<h1>Enter Details</h1>
 					</header>
-					<h2>Manual Connection</span></h2>
+					<h2>Manual Connection</h2>
 					<section>
 						<input id="manual_ssid" type="text" placeholder="SSID" value="">
 						<input id="manual_pwd" type="password" placeholder="Password" value="">
@@ -110,6 +116,53 @@
 						</div>
 					</div>
 				</div>
+				<div id="mqtt-details">
+					<div id="mqtt-connect-wrap">
+						<div id="mqtt-connect">
+							<input id="mqtt_uri" type="text" placeholder="MQTT URI" value="mqtt://mosquitto.local:1883">
+							<input id="mqtt_username" type="text" placeholder="MQTT Username" value="">
+							<input id="mqtt_pwd" type="password" placeholder="MQTT Password" value="">
+							<div class="buttons">
+									<input id="mqtt-join" type="button" value="Connect" data-connect="manual" />
+									<input id="mqtt-cancel" type="button" value="Cancel"/>
+							</div>
+						</div>
+						<div id="mqtt-connecting">
+							<h3 class="gr">Connecting...</h3>
+						</div>
+						<div id="mqtt-connect-fail">
+							<h3 class="rd">Connection to MQTT server failed</h3>
+							<h2 class="tctr"></h2>							
+							<p class="tctr">Please double-check server URI (and username/password).</p>
+							<div class="buttons">
+								<input id="mqtt-fail-ok" type="button" value="OK" class="ctr" />
+							</div>
+						</div>
+					</div>
+					<div id="mqtt-details-wrap">
+						<header>
+							<h1></h1>
+						</header>
+						<h2></h2>
+						<section>
+							<div class="buttons">
+								<input id="mqtt-disconnect" type="button" value="Disconnect" class="ctr"/>
+							</div>
+							<div class="buttons">
+								<input id="mqtt-ok-details" type="button" value="OK" class="ctr" />
+							</div>
+						</section>
+					</div>
+					<div id="diag-mqtt-disconnect" class="diag-box">
+						<div class="diag-box-win">
+							<p>Are you sure you would like to disconnect from this MQTT server?</p>
+							<div class="buttons">
+								<input id="mqtt-no-disconnect" type="button" value="No" />
+								<input id="mqtt-yes-disconnect" type="button" value="Yes" />
+							</div>
+						</div>
+					</div>
+				</div>
 			</div>
 		</div>
 		<div id="credits">
@@ -118,7 +171,7 @@
 			</header>
 			<h2></h2>
 			<section>
-				<p><strong>esp32-wifi-manager</strong>, &copy; 2017-2020, Tony Pottier<br />Licended under the MIT License.</p>
+				<p><strong>esp-wifi-manager</strong>, &copy; 2017-2020, Tony Pottier<br />Licended under the MIT License.</p>
 				<p>
 					This app would not be possible without the following libraries:
 				</p>

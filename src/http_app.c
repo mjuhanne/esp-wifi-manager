@@ -45,6 +45,7 @@ function to process requests, decode URLs, serve files, etc. etc.
 
 #include "wifi_manager.h"
 #include "http_app.h"
+#include "mqtt_manager.h"
 
 
 /* @brief tag used for ESP serial console messages */
@@ -57,7 +58,7 @@ static httpd_handle_t httpd_handle = NULL;
 esp_err_t (*custom_get_httpd_uri_handler)(httpd_req_t *r) = NULL;
 esp_err_t (*custom_post_httpd_uri_handler)(httpd_req_t *r) = NULL;
 
-/* strings holding the URLs of the wifi manager */
+/* strings holding the URLs of the wifi and mqtt manager */
 static char* http_root_url = NULL;
 static char* http_redirect_url = NULL;
 static char* http_js_url = NULL;
@@ -65,6 +66,7 @@ static char* http_css_url = NULL;
 static char* http_connect_url = NULL;
 static char* http_ap_url = NULL;
 static char* http_status_url = NULL;
+static char* http_mqtt_status_url = NULL;
 
 /**
  * @brief embedded binary data.
@@ -150,15 +152,21 @@ static esp_err_t http_server_post_handler(httpd_req_t *req){
 
 
 		/* buffers for the headers */
-		size_t ssid_len = 0, password_len = 0;
-		char *ssid = NULL, *password = NULL;
+		size_t ssid_len = 0, password_len = 0, mqtt_uri_len = 0, mqtt_username_len = 0, mqtt_pwd_len = 0;
+		char *ssid = NULL, *password = NULL, *mqtt_uri = NULL, *mqtt_username = NULL, *mqtt_pwd = NULL;
 
 		/* len of values provided */
 		ssid_len = httpd_req_get_hdr_value_len(req, "X-Custom-ssid");
 		password_len = httpd_req_get_hdr_value_len(req, "X-Custom-pwd");
+		mqtt_uri_len = httpd_req_get_hdr_value_len(req, "X-Custom-mqtt-uri");
+		mqtt_username_len = httpd_req_get_hdr_value_len(req, "X-Custom-mqtt-username");
+		mqtt_pwd_len = httpd_req_get_hdr_value_len(req, "X-Custom-mqtt-pwd");
 
 
-		if(ssid_len && ssid_len <= MAX_SSID_SIZE && password_len && password_len <= MAX_PASSWORD_SIZE){
+		ESP_LOGI(TAG,"lengths - ssid %d pwd %d uri %d username %d pwd %d", ssid_len, password_len, mqtt_uri_len, 
+			mqtt_username_len, mqtt_pwd_len);
+		if(ssid_len && ssid_len <= MAX_SSID_SIZE && 
+			password_len && password_len <= MAX_PASSWORD_SIZE ) {
 
 			/* get the actual value of the headers */
 			ssid = malloc(sizeof(char) * (ssid_len + 1));
@@ -169,7 +177,12 @@ static esp_err_t http_server_post_handler(httpd_req_t *req){
 			wifi_config_t* config = wifi_manager_get_wifi_sta_config();
 			memset(config, 0x00, sizeof(wifi_config_t));
 			memcpy(config->sta.ssid, ssid, ssid_len);
-			memcpy(config->sta.password, password, password_len);
+			if (strcmp(password,"__EMPTY__")==0) {
+				// empty password
+				config->sta.password[0]=0;
+			} else {
+				memcpy(config->sta.password, password, password_len);
+			}
 			ESP_LOGI(TAG, "ssid: %s, password: %s", ssid, password);
 			ESP_LOGD(TAG, "http_server_post_handler: wifi_manager_connect_async() call");
 			wifi_manager_connect_async();
@@ -184,8 +197,50 @@ static esp_err_t http_server_post_handler(httpd_req_t *req){
 			httpd_resp_set_hdr(req, http_pragma_hdr, http_pragma_no_cache);
 			httpd_resp_send(req, NULL, 0);
 
-		}
-		else{
+		} else if  (mqtt_uri_len && mqtt_uri_len <= MQTT_MAX_HOST_LEN &&
+			mqtt_username_len && mqtt_username_len <= MQTT_MAX_USERNAME_LEN &&
+			mqtt_pwd_len && mqtt_pwd_len <= MQTT_MAX_PASSWORD_LEN ){
+		
+			mqtt_uri = malloc(sizeof(char) * (mqtt_uri_len + 1));
+			httpd_req_get_hdr_value_str(req, "X-Custom-mqtt-uri", mqtt_uri, mqtt_uri_len+1);
+			if (strcmp(mqtt_uri,"DISCONNECT")==0) {
+				free(mqtt_uri);
+				ESP_LOGI(TAG, "manual disconnect");
+				mqtt_manager_disconnect_async();
+			} else {
+
+				mqtt_username = malloc(sizeof(char) * (mqtt_username_len + 1));
+				mqtt_pwd = malloc(sizeof(char) * (mqtt_pwd_len + 1));
+				httpd_req_get_hdr_value_str(req, "X-Custom-mqtt-username", mqtt_username, mqtt_username_len+1);
+				httpd_req_get_hdr_value_str(req, "X-Custom-mqtt-pwd", mqtt_pwd, mqtt_pwd_len+1);
+
+				mqtt_manager_set_uri(mqtt_uri);
+				if (strcmp(mqtt_username,"__EMPTY__")==0) {
+					// empty user name
+					mqtt_manager_set_username("");
+				} else {
+					mqtt_manager_set_username(mqtt_username);
+				}
+				if (strcmp(mqtt_pwd,"__EMPTY__")==0) {
+					mqtt_manager_set_password("");
+				} else {
+					mqtt_manager_set_password(mqtt_pwd);
+				}
+				ESP_LOGI(TAG, "mqtt URI: '%s' username: '%s', password: '%s'", mqtt_uri, mqtt_username, mqtt_pwd);
+				mqtt_manager_connect_async();
+
+				free(mqtt_uri);
+				free(mqtt_username);
+				free(mqtt_pwd);
+
+			}
+
+			httpd_resp_set_status(req, http_200_hdr);
+			httpd_resp_set_type(req, http_content_type_json);
+			httpd_resp_set_hdr(req, http_cache_control_hdr, http_cache_control_no_cache);
+			httpd_resp_set_hdr(req, http_pragma_hdr, http_pragma_no_cache);
+			httpd_resp_send(req, NULL, 0);
+		} else {
 			/* bad request the authentification header is not complete/not the correct format */
 			httpd_resp_set_status(req, http_400_hdr);
 			httpd_resp_send(req, NULL, 0);
@@ -311,6 +366,30 @@ static esp_err_t http_server_get_handler(httpd_req_t *req){
 				ESP_LOGE(TAG, "http_server_netconn_serve: GET /status.json failed to obtain mutex");
 			}
 		}
+		/* GET /mqtt_status.json */
+		else if(strcmp(req->uri, http_mqtt_status_url) == 0){
+
+			if(mqtt_manager_lock_json_buffer(( TickType_t ) 10)){
+				char *buff = mqtt_manager_get_info_json();
+				if(buff){
+					httpd_resp_set_status(req, http_200_hdr);
+					httpd_resp_set_type(req, http_content_type_json);
+					httpd_resp_set_hdr(req, http_cache_control_hdr, http_cache_control_no_cache);
+					httpd_resp_set_hdr(req, http_pragma_hdr, http_pragma_no_cache);
+					httpd_resp_send(req, buff, strlen(buff));
+					mqtt_manager_unlock_json_buffer();
+				}
+				else{
+					httpd_resp_set_status(req, http_503_hdr);
+					httpd_resp_send(req, NULL, 0);
+				}
+			}
+			else{
+				httpd_resp_set_status(req, http_503_hdr);
+				httpd_resp_send(req, NULL, 0);
+				ESP_LOGE(TAG, "http_server_netconn_serve: GET /mqtt_status.json failed to obtain mutex");
+			}
+		}
 		else{
 
 			if(custom_get_httpd_uri_handler == NULL){
@@ -335,6 +414,8 @@ static esp_err_t http_server_get_handler(httpd_req_t *req){
 
 }
 
+#ifdef ESP32
+
 /* URI wild card for any GET request */
 static const httpd_uri_t http_server_get_request = {
     .uri       = "*",
@@ -353,6 +434,15 @@ static const httpd_uri_t http_server_delete_request = {
 	.method = HTTP_DELETE,
 	.handler = http_server_delete_handler
 };
+#else
+
+// We need additional HTTP_GET for http://10.10.0.1/  since ESP8266 RTOS SDK doesn't have wildcard config.uri_match_fn
+static const httpd_uri_t http_server_get_request_root = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = http_server_get_handler
+};
+#endif
 
 
 void http_app_stop(){
@@ -389,6 +479,10 @@ void http_app_stop(){
 			free(http_status_url);
 			http_status_url = NULL;
 		}
+		if(http_mqtt_status_url){
+			free(http_mqtt_status_url);
+			http_mqtt_status_url = NULL;
+		}
 
 		/* stop server */
 		httpd_stop(httpd_handle);
@@ -415,6 +509,26 @@ static char* http_app_generate_url(const char* page){
 	return ret;
 }
 
+
+/**
+ * @brief helper to register request handler for a specific URL
+ */
+static void http_app_register_uri_handler(httpd_handle_t handle, const char * url, uint32_t method) {
+	httpd_uri_t req;
+	req.uri = url;
+	req.method = method;
+	if (method == HTTP_GET) {
+		req.handler = http_server_get_handler;
+	} else if (method == HTTP_POST) {
+		req.handler = http_server_post_handler;
+	} else if (method == HTTP_DELETE) {
+		req.handler = http_server_delete_handler;
+	}
+	httpd_register_uri_handler( handle, &req );
+	ESP_LOGI(TAG,"Registered URL %s", url);
+}
+
+
 void http_app_start(bool lru_purge_enable){
 
 	esp_err_t err;
@@ -423,9 +537,15 @@ void http_app_start(bool lru_purge_enable){
 
 		httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
-		/* this is an important option that isn't set up by default.
+		/* this is an important option that isn't set up by default.  (Works only on ESP32 esp-idf!)
 		 * We could register all URLs one by one, but this would not work while the fake DNS is active */
+#ifdef ESP32
 		config.uri_match_fn = httpd_uri_match_wildcard;
+#else
+		// increase max number of URI handlers 
+		config.max_uri_handlers = 16;		
+#endif
+
 		config.lru_purge_enable = lru_purge_enable;
 
 		/* generate the URLs */
@@ -438,6 +558,7 @@ void http_app_start(bool lru_purge_enable){
 			const char page_connect[] = "connect.json";
 			const char page_ap[] = "ap.json";
 			const char page_status[] = "status.json";
+			const char page_mqtt_status[] = "mqtt_status.json";
 
 			/* root url, eg "/"   */
 			const size_t http_root_url_sz = sizeof(char) * (root_len+1);
@@ -463,16 +584,29 @@ void http_app_start(bool lru_purge_enable){
 			http_connect_url = http_app_generate_url(page_connect);
 			http_ap_url = http_app_generate_url(page_ap);
 			http_status_url = http_app_generate_url(page_status);
-
+			http_mqtt_status_url = http_app_generate_url(page_mqtt_status);
 		}
 
 		err = httpd_start(&httpd_handle, &config);
 
 	    if (err == ESP_OK) {
 	        ESP_LOGI(TAG, "Registering URI handlers");
+#ifdef ESP32
 	        httpd_register_uri_handler(httpd_handle, &http_server_get_request);
 	        httpd_register_uri_handler(httpd_handle, &http_server_post_request);
 	        httpd_register_uri_handler(httpd_handle, &http_server_delete_request);
+#else
+	        // Register all the documents separately for ESP8266
+	        httpd_register_uri_handler(httpd_handle, &http_server_get_request_root);
+	        http_app_register_uri_handler(httpd_handle, http_js_url, HTTP_GET);
+	        http_app_register_uri_handler(httpd_handle, http_js_url, HTTP_POST);
+	        http_app_register_uri_handler(httpd_handle, http_css_url, HTTP_GET);
+	        http_app_register_uri_handler(httpd_handle, http_connect_url, HTTP_POST);
+	        http_app_register_uri_handler(httpd_handle, http_connect_url, HTTP_DELETE);
+	        http_app_register_uri_handler(httpd_handle, http_ap_url, HTTP_GET);
+	        http_app_register_uri_handler(httpd_handle, http_status_url, HTTP_GET);
+	        http_app_register_uri_handler(httpd_handle, http_mqtt_status_url, HTTP_GET);
+#endif
 	    }
 	}
 

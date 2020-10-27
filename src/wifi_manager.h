@@ -253,7 +253,11 @@ struct wifi_settings_t{
 	bool sta_only;
 	wifi_ps_type_t sta_power_save;
 	bool sta_static_ip;
+#ifdef ESP32
 	esp_netif_ip_info_t sta_static_ip_config;
+#else
+	tcpip_adapter_ip_info_t sta_static_ip_config;
+#endif
 };
 extern struct wifi_settings_t wifi_settings;
 
@@ -266,7 +270,7 @@ typedef struct{
 	void *param;
 } queue_message;
 
-
+#ifdef ESP32
 /**
  * @brief returns the current esp_netif object for the STAtion
  */
@@ -276,12 +280,14 @@ esp_netif_t* wifi_manager_get_esp_netif_sta();
  * @brief returns the current esp_netif object for the Access Point
  */
 esp_netif_t* wifi_manager_get_esp_netif_ap();
-
+#endif
 
 /**
  * Allocate heap memory for the wifi manager and start the wifi_manager RTOS task
+  If SSID is NULL, DEFAULT_AP_SSID is used.
+  If append_ssid_with_mac is true, SSID is appended with last 3 bytes of MAC address to distinguish this from other ESP APs
  */
-void wifi_manager_start();
+void wifi_manager_start( const char * ssid, bool append_ssid_with_mac );
 
 /**
  * Frees up all memory allocated by the wifi_manager and kill the task.
@@ -305,6 +311,7 @@ char* wifi_manager_get_ip_info_json();
 
 void wifi_manager_scan_async();
 
+void wifi_manager_erase_config();
 
 /**
  * @brief saves the current STA wifi config to flash ram storage.
@@ -318,6 +325,8 @@ esp_err_t wifi_manager_save_sta_config();
 bool wifi_manager_fetch_wifi_sta_config();
 
 wifi_config_t* wifi_manager_get_wifi_sta_config();
+
+struct wifi_settings_t * wifi_manager_get_wifi_settings();
 
 
 /**
@@ -400,6 +409,11 @@ char* wifi_manager_get_sta_ip_string();
  */
 void wifi_manager_safe_update_sta_ip_string(uint32_t ip);
 
+
+void wifi_manager_set_auto_ap_shutdown( bool enable );
+
+
+void wifi_manager_set_auto_ap_start_after_failure( bool enable );
 
 /**
  * @brief Register a callback to a custom function when specific event message_code happens.

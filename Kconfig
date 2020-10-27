@@ -79,3 +79,20 @@ config DEFAULT_AP_BEACON_INTERVAL
 	100ms is the recommended default.
 
 endmenu
+
+menu "MQTT Manager Configuration"
+
+config MQTT_MANAGER_TASK_PRIORITY
+    int "RTOS Task Priority for the mqtt_manager"
+    default 5
+    help
+    Tasks spawn by the manager will have a priority of WIFI_MANAGER_TASK_PRIORITY-1. For this particular reason, minimum recommended task priority is 2.
+
+config MQTT_MANAGER_RETRY_TIMER
+    int "Time (in ms) between each retry attempt"
+    default 10000
+    help
+    Defines the time to wait before an attempt to re-connect to a saved mqtt server is made after connection is lost or another unsuccesful attempt is made.
+
+endmenu
+
