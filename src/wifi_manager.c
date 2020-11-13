@@ -29,6 +29,8 @@ Contains the freeRTOS task and all necessary support
 @see https://github.com/tonyp7/esp32-wifi-manager
 */
 
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,12 +157,20 @@ bool ap_ssid_mac;
 /* @brief Storage for Dynamic Access Point name. We don't use the one in wifisettings because it will be overwritten when loading settings from NVS */
 char * ap_ssid = NULL;
 
+/* Used for syncing. Other tasks might want to check if wifi manager has started before continuing. Note that we cannot use event group
+   since it might not be created yet */
+bool wifi_manager_started = false;
 
 
+bool wifi_manager_is_started() {
+	return wifi_manager_started;
+}
 
 void wifi_manager_timer_retry_cb( TimerHandle_t xTimer ){
 
 	ESP_LOGI(TAG, "Retry Timer Tick! Sending ORDER_CONNECT_STA with reason CONNECTION_REQUEST_AUTO_RECONNECT");
+
+    ESP_LOGD(TAG, "timer - stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
 	/* stop the timer */
 	xTimerStop( xTimer, (TickType_t) 0 );
@@ -189,6 +199,8 @@ void wifi_manager_disconnect_async(){
 
 
 void wifi_manager_start( const char * ssid, bool append_ssid_with_mac ){
+
+	wifi_manager_started = false;
 
 	/* disable the default wifi logging */
 	esp_log_level_set("wifi", ESP_LOG_NONE);
@@ -233,6 +245,7 @@ void wifi_manager_start( const char * ssid, bool append_ssid_with_mac ){
 
 	// by default start AP after max STA connect reties have reached 
 	auto_ap_start_after_failure = true;
+
 	// by default shutdown AP after STA connected and timer period is elapsed
 	xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_AUTO_AP_SHUTDOWN);
 
@@ -905,7 +918,7 @@ void wifi_manager_destroy(){
 	vQueueDelete(wifi_manager_queue);
 	wifi_manager_queue = NULL;
 
-
+	wifi_manager_started = false;
 }
 
 
@@ -1123,6 +1136,9 @@ void wifi_manager( void * pvParameters ){
 	/* enqueue first event: load previous config */
 	wifi_manager_send_message(WM_ORDER_LOAD_AND_RESTORE_STA, NULL);
 
+	/* Signal that we are ready */
+	wifi_manager_started = true;
+
 	/* main processing loop */
 	for(;;){
 		xStatus = xQueueReceive( wifi_manager_queue, &msg, portMAX_DELAY );
@@ -1166,13 +1182,15 @@ void wifi_manager( void * pvParameters ){
 				if (! (uxBits & WIFI_MANAGER_SCAN_BIT) ){
 					if (! (uxBits & ( WIFI_MANAGER_REQUEST_STA_CONNECT_BIT | WIFI_MANAGER_REQUEST_RESTORE_STA_BIT) ) ) {
 						esp_err_t res = esp_wifi_scan_start(&scan_config, false);
-						if (res==ESP_ERR_WIFI_STATE) {
+						if (res==ESP_OK) {
+							xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_SCAN_BIT);
+						} else if (res==ESP_ERR_WIFI_STATE) {
 							// This might happen when connect retry is attempted while AP scan starts.. Just ignore it
 							ESP_LOGE(TAG,"Wifi still in connect mode whan starting scan!");
 						} else {
+							ESP_LOGE(TAG,"wifi_scan_start err %d", res);
 							// handle other errors
-							ESP_ERROR_CHECK(res);
-							xEventGroupSetBits(wifi_manager_event_group, WIFI_MANAGER_SCAN_BIT);
+							//ESP_ERROR_CHECK(res);
 						}
 					} else {
 						// Cannot scan while connecting to AP

@@ -30,6 +30,7 @@ Contains the freeRTOS task for the DNS server that processes the requests.
 @see https://idyl.io
 @see https://github.com/tonyp7/esp32-wifi-manager
 */
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 
 #include <lwip/sockets.h>
 #include <string.h>
@@ -124,6 +125,8 @@ void dns_server(void *pvParameters) {
     int err;
 
     ESP_LOGI(TAG, "DNS Server listening on 53/udp");
+
+    ESP_LOGD(TAG, "stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
     /* Start loop to process DNS requests */
     for(;;) {

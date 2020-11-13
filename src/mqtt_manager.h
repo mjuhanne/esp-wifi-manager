@@ -134,6 +134,7 @@ int mqtt_manager_publish(  const char *topic, const char *data, int len, int qos
 void mqtt_manager_subscribe( const char * topic );
 void mqtt_manager_unsubscribe( const char * topic );
 
+bool mqtt_manager_is_connected();
 void mqtt_manager_set_auto_reconnect(bool reconnect);
 
 void mqtt_manager_connect_async();

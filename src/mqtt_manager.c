@@ -1,3 +1,5 @@
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +20,7 @@
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
 
-static const char *TAG = "MQTT";
+static const char *TAG = "mqtt_manager";
 
 const char mqtt_manager_nvs_namespace[] = "espmqttmgr";
 
@@ -107,14 +109,11 @@ bool mqtt_manager_do_fetch_config(mqtt_config_t * target_config) {
 	if(esp_err == ESP_OK) {
 		ESP_LOGI(TAG, "mqtt_manager_fetch_config: URI:'%s' username:'%s' password:'%s' auto-reconnect: %d",
 				target_config->uri, target_config->username, target_config->password, target_config->auto_reconnect);
-		if (strcmp(mqtt_config.uri,"")==0)
+		if (strcmp(target_config->uri,"")==0)
 			esp_err = ESP_ERR_NOT_FOUND;
 	} else {
 		esp_err = ESP_ERR_NOT_FOUND;
 	}
-
-	if (esp_err != ESP_OK)
-		memset(&mqtt_config, 0x00, sizeof(sz));
 
 	nvs_close(handle);
 	return (esp_err == ESP_OK);
@@ -126,6 +125,10 @@ bool mqtt_manager_fetch_config(){
 	bool res = false;
 	if(nvs_sync_lock( portMAX_DELAY )){
 		res = mqtt_manager_do_fetch_config(&mqtt_config);
+
+		if (res != ESP_OK)
+			memset(&mqtt_config, 0x00, sizeof(mqtt_config_t));
+
 		nvs_sync_unlock();
 	} 	
 	return res;
@@ -138,8 +141,9 @@ bool mqtt_manager_config_changed() {
 
 		// lets check if write is really needed 
 		mqtt_config_t tmp_config;
+
 		if (mqtt_manager_do_fetch_config(&tmp_config)) {
-			ESP_LOGI(TAG,"config changed: compare %d bytes, addr %d %d ", sizeof(mqtt_config), (int)&tmp_config, (int)&mqtt_config);
+			//ESP_LOGI(TAG,"config changed: compare %d bytes, addr %d %d ", sizeof(mqtt_config), (int)&tmp_config, (int)&mqtt_config);
 			if (memcmp(&tmp_config, &mqtt_config, sizeof(mqtt_config))!=0) 
 				changed = true;
 		} else {
@@ -156,7 +160,6 @@ esp_err_t mqtt_manager_save_config(){
 
 	nvs_handle handle;
 	esp_err_t esp_err;
-	//size_t sz;
 
 	bool change = mqtt_manager_config_changed();
 	if (!change) {		
@@ -174,8 +177,12 @@ esp_err_t mqtt_manager_save_config(){
 			return esp_err;
 		}
 
+		ESP_LOGI(TAG, "mqtt_manager_save_config: URI:'%s' username:'%s' password:'%s' auto-reconnect: %d",
+				mqtt_config.uri, mqtt_config.username, mqtt_config.password, mqtt_config.auto_reconnect);
+
 		esp_err = nvs_set_blob(handle, "mqtt_config", &mqtt_config, sizeof(mqtt_config));
 		if (esp_err != ESP_OK){
+			ESP_LOGE(TAG,"Config write failed!");
 			nvs_sync_unlock();
 			return esp_err;
 		}
@@ -200,7 +207,6 @@ esp_err_t mqtt_manager_save_config(){
 
 
 void mqtt_manager_destroy(){
-
 	vTaskDelete(task_mqtt_manager);
 	task_mqtt_manager = NULL;
 
@@ -211,7 +217,6 @@ void mqtt_manager_destroy(){
 	mqtt_conn_event_group = NULL;
 	vQueueDelete(mqtt_manager_queue);
 	mqtt_manager_queue = NULL;
-
 }
 
 BaseType_t mqtt_manager_send_message(mqtt_message_code_t code, void *param){
@@ -236,6 +241,7 @@ bool mqtt_manager_lock_json_buffer(TickType_t xTicksToWait){
 	}
 
 }
+
 void mqtt_manager_unlock_json_buffer(){
 	xSemaphoreGive( mqtt_manager_json_mutex );
 }
@@ -248,27 +254,29 @@ char* mqtt_manager_get_info_json() {
 	return mqtt_info_json;
 }
 
-
 void mqtt_manager_generate_json(mqtt_update_reason_code_t update_reason_code, const char * error_string){
+	if (mqtt_manager_lock_json_buffer( portMAX_DELAY )) {
 
-	const char *json_format = "{\"uri\":\"%s\",\"urc\":%d, \"error\":\"%s\"}\n";
-	const char empty_str[1] = "";
-	const char * error_str;
+		const char *json_format = "{\"uri\":\"%s\",\"urc\":%d, \"error\":\"%s\"}\n";
+		const char empty_str[1] = "";
+		const char * error_str;
 
-	if (error_string)
-		error_str = error_string; 
-	else
-		error_str = empty_str;
+		if (error_string)
+			error_str = error_string; 
+		else
+			error_str = empty_str;
 
-	memset(mqtt_info_json, 0x00, JSON_MQTT_INFO_SIZE);
+		memset(mqtt_info_json, 0x00, JSON_MQTT_INFO_SIZE);
 
-	snprintf( mqtt_info_json, JSON_MQTT_INFO_SIZE, json_format,
-			mqtt_config.uri,
-			(int)update_reason_code,
-			error_str);
-	ESP_LOGI(TAG,"json %s", mqtt_info_json);
+		snprintf( mqtt_info_json, JSON_MQTT_INFO_SIZE, json_format,
+				mqtt_config.uri,
+				(int)update_reason_code,
+				error_str);
+		ESP_LOGI(TAG,"json %s", mqtt_info_json);
+
+		mqtt_manager_unlock_json_buffer();
+	}
 }
-
 
 /**
  * @brief Standard wifi event handler
@@ -361,9 +369,11 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
             break;
         case MQTT_EVENT_DATA:
+        	/*
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
             printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
             printf("DATA=%.*s\r\n", event->data_len, event->data);
+            */
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
@@ -400,6 +410,8 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 #endif
 			mqtt_manager_send_message( MM_EVENT_MQTT_ERROR, mqtt_error_string );
             break;
+        case MQTT_EVENT_BEFORE_CONNECT:
+        	break;
         default:
             ESP_LOGI(TAG, "Other event id:%d", event->event_id);
 			ESP_LOGW(TAG," Heap: %d", esp_get_free_heap_size());
@@ -462,7 +474,9 @@ void mqtt_manager_set_auto_reconnect(bool reconnect) {
 	*/
 }
 
-
+bool mqtt_manager_is_connected() {
+	return (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT);	
+}
 
 void mqtt_manager_timer_retry_cb( TimerHandle_t xTimer ){
 
@@ -574,7 +588,10 @@ void mqtt_manager_task( void * pvParameters ) {
 								#endif
 								ESP_LOGW(TAG," Heap: %d", esp_get_free_heap_size());
 					            ESP_LOGI(TAG,"Starting MQTT client ..");
-				                esp_mqtt_client_start(mqtt_client);
+				                if (esp_mqtt_client_start(mqtt_client) != ESP_OK) {
+					                snprintf(mqtt_error_string, MAX_ERROR_STRING_LEN, "Could not start MQTT client!");
+					                mqtt_manager_send_message(MM_EVENT_MQTT_ERROR, mqtt_error_string);
+				            	}
 				            }
 						} else {
 							ESP_LOGE(TAG,"MQTT URI not set!");
@@ -610,10 +627,7 @@ void mqtt_manager_task( void * pvParameters ) {
 	                ESP_LOGI(TAG,"MQTT server connected!");
 
 		            xEventGroupSetBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
-					if(mqtt_manager_lock_json_buffer( portMAX_DELAY )){
-		                mqtt_manager_generate_json(UPDATE_MQTT_CONNECTION_OK,NULL);
-						mqtt_manager_unlock_json_buffer();
-					}
+					mqtt_manager_generate_json(UPDATE_MQTT_CONNECTION_OK,NULL);
 
 					// Now that we have successful connection, turn on auto reconnect and save settings to flash. 
 					mqtt_manager_set_auto_reconnect(true); 
@@ -629,15 +643,10 @@ void mqtt_manager_task( void * pvParameters ) {
 
 				case MM_EVENT_MQTT_DISCONNECTED:{
 
-					EventBits_t uxBits;
-					uxBits = xEventGroupGetBits(mqtt_conn_event_group);
+	                esp_mqtt_client_destroy(mqtt_client);
 
-					if (mqtt_manager_lock_json_buffer( portMAX_DELAY )) {
-						if (uxBits & MQTT_CONNECTED_BIT) {
-			                mqtt_manager_generate_json(UPDATE_MQTT_LOST_CONNECTION,NULL);
-						} // Failed attempt will be handled below at MM_EVENT_MQTT_ERROR
-						mqtt_manager_unlock_json_buffer();
-					}
+					// This is just for lost connection. Failed attempt will be handled below at MM_EVENT_MQTT_ERROR
+					mqtt_manager_generate_json(UPDATE_MQTT_LOST_CONNECTION,NULL);
 
 		            xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
 
@@ -656,9 +665,12 @@ void mqtt_manager_task( void * pvParameters ) {
 				break;
 
 				case MM_EVENT_MQTT_ERROR:{
-	                ESP_LOGI(TAG,"MQTT error!");
+	                ESP_LOGE(TAG,"MQTT error!");
 
-	                mqtt_manager_generate_json(UPDATE_MQTT_FAILED_ATTEMPT,(char*)msg.param);
+	                // TODO: is MM_EVENT_MQTT_DISCONNECTED called. If yes, no need to destroy the client handle
+	                //esp_mqtt_client_destroy(mqtt_client);
+
+		            mqtt_manager_generate_json(UPDATE_MQTT_FAILED_ATTEMPT,(char*)msg.param);
 
 					/* callback */
 					if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])( msg.param );
@@ -672,7 +684,7 @@ void mqtt_manager_task( void * pvParameters ) {
 		}
 
 
-    ESP_LOGW(TAG, "Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGD(TAG, "loop - stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
     }
 }

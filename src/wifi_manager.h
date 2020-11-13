@@ -34,6 +34,11 @@ Contains the freeRTOS task and all necessary support
 
 #include <stdbool.h>
 
+#include "sdkconfig.h"
+#ifdef CONFIG_IDF_TARGET_ESP32
+#define ESP32
+#endif
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -312,6 +317,8 @@ char* wifi_manager_get_ip_info_json();
 void wifi_manager_scan_async();
 
 void wifi_manager_erase_config();
+
+bool wifi_manager_is_started();
 
 /**
  * @brief saves the current STA wifi config to flash ram storage.
