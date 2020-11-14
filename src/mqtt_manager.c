@@ -107,7 +107,7 @@ bool mqtt_manager_do_fetch_config(mqtt_config_t * target_config) {
 	size_t sz = sizeof(mqtt_config_t);
 	esp_err = nvs_get_blob(handle, "mqtt_config", target_config, &sz);
 	if(esp_err == ESP_OK) {
-		ESP_LOGI(TAG, "mqtt_manager_fetch_config: URI:'%s' username:'%s' password:'%s' auto-reconnect: %d",
+		ESP_LOGD(TAG, "mqtt_manager_do_fetch_config: URI:'%s' username:'%s' password:'%s' auto-reconnect: %d",
 				target_config->uri, target_config->username, target_config->password, target_config->auto_reconnect);
 		if (strcmp(target_config->uri,"")==0)
 			esp_err = ESP_ERR_NOT_FOUND;
@@ -124,15 +124,16 @@ bool mqtt_manager_do_fetch_config(mqtt_config_t * target_config) {
 bool mqtt_manager_fetch_config(){
 	bool res = false;
 	if(nvs_sync_lock( portMAX_DELAY )){
-		res = mqtt_manager_do_fetch_config(&mqtt_config);
-
-		if (res != ESP_OK)
-			memset(&mqtt_config, 0x00, sizeof(mqtt_config_t));
-
+		if (mqtt_manager_do_fetch_config(&mqtt_config)) {
+			res = true;
+		}
 		nvs_sync_unlock();
-	} 	
-	return res;
+	}
 
+	ESP_LOGI(TAG, "mqtt_manager_fetch_config: URI:'%s' username:'%s' password:'%s' auto-reconnect: %d",
+			mqtt_config.uri, mqtt_config.username, mqtt_config.password, mqtt_config.auto_reconnect);
+
+	return res;
 }
 
 bool mqtt_manager_config_changed() {
@@ -522,6 +523,8 @@ void mqtt_manager_task( void * pvParameters ) {
 				case MM_EVENT_STA_GOT_IP:{
 					if (strcmp(mqtt_config.uri,"")!=0) {
 						mqtt_manager_send_message(MM_ORDER_CONNECT, NULL);
+					} else {
+			            ESP_LOGW(TAG,"No MQTT server defined");
 					}
 					/* callback */
 					if(cb_ptr_arr[msg.code]) (*cb_ptr_arr[msg.code])( msg.param );
@@ -708,7 +711,7 @@ void mqtt_manager_start() {
 		wifi_manager_send_message(WM_ORDER_START_AP, NULL);
 	} else {
 		ESP_LOGW(TAG,"No MQTT config found. Starting AP..");
-	    memset(&mqtt_config, 0x00, sizeof(esp_mqtt_client_config_t));
+	    memset(&mqtt_config, 0x00, sizeof(mqtt_config_t));
 		// We don't want to reconnect before making sure that this config is valid
 	    mqtt_config.auto_reconnect = false;	
 		wifi_manager_send_message(WM_ORDER_START_AP, NULL);
