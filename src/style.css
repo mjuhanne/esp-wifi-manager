@@ -215,6 +215,9 @@ h3 {
 #connect-details {
     display: none;
 }
+#mqtt-details {
+    display: none;
+}
 .fr {
     float: right;
     margin-right: 20px;

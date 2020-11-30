@@ -1098,7 +1098,7 @@ void wifi_manager( void * pvParameters ){
 	    // Append SSID with last 3 bytes of MAC address
 	    uint8_t mac[6];
 	    ESP_ERROR_CHECK(esp_wifi_get_mac(ESP_IF_WIFI_STA, mac));
-	    sprintf(ap_ssid,"%s-%2x%2x%2x", 
+	    sprintf(ap_ssid,"%s-%02x%02x%02x", 
 	    	(char*)ap_config.ap.ssid,
 	        mac[3],
     	    mac[4],

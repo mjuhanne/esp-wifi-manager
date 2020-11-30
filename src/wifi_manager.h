@@ -39,6 +39,11 @@ Contains the freeRTOS task and all necessary support
 #define ESP32
 #endif
 
+#ifdef ESP32
+#include "esp_netif.h"
+#else
+#include "tcpip_adapter.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

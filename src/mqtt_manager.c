@@ -64,10 +64,12 @@ char *mqtt_info_json = NULL;
 
 
 void mqtt_manager_subscribe( const char * topic ) {
+	ESP_LOGI(TAG,"Subscribe to %s", topic);
 	esp_mqtt_client_subscribe(mqtt_client, topic, 0);
 }
 
 void mqtt_manager_unsubscribe( const char * topic ) {
+	ESP_LOGI(TAG,"Unsubscribe from %s", topic);
 	esp_mqtt_client_unsubscribe(mqtt_client, topic);
 }
 
@@ -411,8 +413,10 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 #endif
 			mqtt_manager_send_message( MM_EVENT_MQTT_ERROR, mqtt_error_string );
             break;
+#ifdef ESP32
         case MQTT_EVENT_BEFORE_CONNECT:
         	break;
+#endif
         default:
             ESP_LOGI(TAG, "Other event id:%d", event->event_id);
 			ESP_LOGW(TAG," Heap: %d", esp_get_free_heap_size());
@@ -570,6 +574,7 @@ void mqtt_manager_task( void * pvParameters ) {
 					if (!(xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT)) {
 						if (strcmp(mqtt_config.uri,"") != 0) {					
 				            ESP_LOGI(TAG,"Connecting to the MQTT server (%s) (reconnect=%d)..",mqtt_config.uri, mqtt_config.auto_reconnect );
+							mqtt_manager_generate_json(UPDATE_MQTT_CONNECTING,NULL);
 				            esp_mqtt_client_config_t cfg;
 				            memset((void*)&cfg, 0x00, sizeof(esp_mqtt_client_config_t));
 				            cfg.uri = mqtt_config.uri;
@@ -648,8 +653,12 @@ void mqtt_manager_task( void * pvParameters ) {
 
 	                esp_mqtt_client_destroy(mqtt_client);
 
-					// This is just for lost connection. Failed attempt will be handled below at MM_EVENT_MQTT_ERROR
-					mqtt_manager_generate_json(UPDATE_MQTT_LOST_CONNECTION,NULL);
+					if (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT) {
+						mqtt_manager_generate_json(UPDATE_MQTT_LOST_CONNECTION,NULL);
+					} else {
+		                // if we get DISCONNECTED event when there was no connection made at all, publish it as FAILED ATTEMPT
+						mqtt_manager_generate_json(UPDATE_MQTT_FAILED_ATTEMPT,NULL);
+					}
 
 		            xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
 

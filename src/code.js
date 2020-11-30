@@ -537,7 +537,11 @@ async function checkMqttStatus(url = "mqtt_status.json") {
             document.querySelector(
               "#mqtt-details-wrap h2"
             ).textContent = "";
+            break;
           case 1:
+            console.info("Connecting to MQTT server..");
+            break;
+          case 2:
             console.info("Got MQTT connection!");
             document.querySelector(
               "#mqtt-connected-to div div span"
@@ -559,8 +563,8 @@ async function checkMqttStatus(url = "mqtt_status.json") {
             gel("mqtt-ok-details").disabled = false;
             gel("mqtt-disconnect").disabled = false;
             break;
-          case 2:
-            console.info("User disconnect");
+          case 3:
+            console.info("MQTT User disconnect");
             document.querySelector(
               "#mqtt-connected-to div div span"
             ).textContent = data["uri"];
@@ -581,13 +585,14 @@ async function checkMqttStatus(url = "mqtt_status.json") {
             stopCheckMqttStatusInterval();
 
             break;
-          case 3: // attempt failed
+          case 4: // attempt failed
+            console.info("MQTT Attempt failed");
             document.querySelector(
               "#mqtt-connect-fail h2"
             ).textContent = data["error"];
             // fall through
-          case 4: // conn lost
-            console.info("Disconnected");
+          case 5: // conn lost
+            console.info("MQTT Disconnected");
             document.querySelector(
               "#mqtt-connected-to div div span"
             ).textContent = data["uri"];

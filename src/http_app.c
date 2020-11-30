@@ -513,6 +513,7 @@ static char* http_app_generate_url(const char* page){
 /**
  * @brief helper to register request handler for a specific URL
  */
+#ifndef ESP32
 static void http_app_register_uri_handler(httpd_handle_t handle, const char * url, uint32_t method) {
 	httpd_uri_t req;
 	req.uri = url;
@@ -527,7 +528,7 @@ static void http_app_register_uri_handler(httpd_handle_t handle, const char * ur
 	httpd_register_uri_handler( handle, &req );
 	ESP_LOGI(TAG,"Registered URL %s", url);
 }
-
+#endif
 
 void http_app_start(bool lru_purge_enable){
 
