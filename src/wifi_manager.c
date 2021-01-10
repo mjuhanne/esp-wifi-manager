@@ -243,7 +243,7 @@ void wifi_manager_start( const char * ssid, bool append_ssid_with_mac ){
 	}
 	ap_ssid_mac = append_ssid_with_mac;
 
-	// by default start AP after max STA connect reties have reached 
+	// by default start AP after max STA connect retries have reached 
 	auto_ap_start_after_failure = true;
 
 	// by default shutdown AP after STA connected and timer period is elapsed

@@ -449,34 +449,8 @@ void mqtt_manager_disconnect_async() {
 	mqtt_manager_send_message(MM_ORDER_DISCONNECT, NULL);
 }
 
-/*
-void mqtt_manager_set_auto_reconnect(bool reconnect) {
-	if (mqtt_config.disable_auto_reconnect == reconnect) {
-		// setting changed	
-		mqtt_config.disable_auto_reconnect = !reconnect;
-		if (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT) {
-
-			// cannot change configuration while connected, have to reconnect
-			mqtt_manager_disconnect_async();
-			mqtt_manager_connect_async();
-		}
-	}
-}
-*/
 void mqtt_manager_set_auto_reconnect(bool reconnect) {
 	mqtt_config.auto_reconnect = reconnect;
-	/*
-	if (mqtt_config.auto_reconnect != reconnect) {
-		// setting changed	
-		mqtt_config.auto_reconnect = reconnect;
-		if (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT) {
-
-			// cannot change configuration while connected, have to reconnect
-			mqtt_manager_disconnect_async();
-			mqtt_manager_connect_async();
-		}
-	}
-	*/
 }
 
 bool mqtt_manager_is_connected() {
@@ -485,15 +459,19 @@ bool mqtt_manager_is_connected() {
 
 void mqtt_manager_timer_retry_cb( TimerHandle_t xTimer ){
 
-	ESP_LOGI(TAG, "Retry Timer Tick! Sending MM_ORDER_CONNECT");
-
 	/* stop the timer */
 	xTimerStop( xTimer, (TickType_t) 0 );
 
-	if (!(xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT)) {
-		/* Attempt to reconnect */
-		mqtt_manager_send_message(MM_ORDER_CONNECT, NULL);
-	}
+    if (xEventGroupGetBits(mqtt_conn_event_group) & WIFI_CONNECTED_BIT) {
+
+		ESP_LOGI(TAG, "Retry Timer Tick! Sending MM_ORDER_CONNECT");
+
+		if (!(xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT)) {
+			/* Attempt to reconnect */
+			mqtt_manager_send_message(MM_ORDER_CONNECT, NULL);
+		}
+
+    }
 }
 
 
@@ -580,7 +558,7 @@ void mqtt_manager_task( void * pvParameters ) {
 				            cfg.uri = mqtt_config.uri;
 				            cfg.username = mqtt_config.username;
 				            cfg.password = mqtt_config.password;
-				            cfg.disable_auto_reconnect = !mqtt_config.auto_reconnect;
+				            cfg.disable_auto_reconnect = true; // we handle auto-reconnect ourself
 							#ifndef ESP32
 								cfg.event_handle = mqtt_event_handler;
 							#endif
@@ -613,15 +591,20 @@ void mqtt_manager_task( void * pvParameters ) {
 				break;
 
 				case MM_ORDER_DISCONNECT: {
-		            ESP_LOGI(TAG,"Discconnecting from the MQTT server ..");
-	                if (esp_mqtt_client_stop(mqtt_client) != ESP_OK) {
-	                    ESP_LOGE(TAG,"Warning. Could not stop MQTT client");
-	                }
-	                esp_mqtt_client_destroy(mqtt_client);
 
-					// We don't get any DISCONNECTED event from MQTT client, so assume disconnect will succeed
-					xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
-					mqtt_manager_generate_json(UPDATE_MQTT_USER_DISCONNECT,NULL);
+			        if (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT) {
+			        	xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
+
+			            ESP_LOGI(TAG,"Discconnecting from the MQTT server ..");
+		                if (esp_mqtt_client_stop(mqtt_client) != ESP_OK) {
+		                    ESP_LOGE(TAG,"Warning. Could not stop MQTT client");
+		                }
+		                esp_mqtt_client_destroy(mqtt_client);
+
+						// We don't get any DISCONNECTED event from MQTT client, so assume disconnect will succeed
+						xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_BIT);
+						mqtt_manager_generate_json(UPDATE_MQTT_USER_DISCONNECT,NULL);
+					}
 
 					// Cancel also AP shutdown
 					wifi_manager_set_auto_ap_shutdown(false);
@@ -651,9 +634,8 @@ void mqtt_manager_task( void * pvParameters ) {
 
 				case MM_EVENT_MQTT_DISCONNECTED:{
 
-	                esp_mqtt_client_destroy(mqtt_client);
-
 					if (xEventGroupGetBits(mqtt_conn_event_group) & MQTT_CONNECTED_BIT) {
+		                esp_mqtt_client_destroy(mqtt_client);
 						mqtt_manager_generate_json(UPDATE_MQTT_LOST_CONNECTION,NULL);
 					} else {
 		                // if we get DISCONNECTED event when there was no connection made at all, publish it as FAILED ATTEMPT
@@ -665,7 +647,7 @@ void mqtt_manager_task( void * pvParameters ) {
 					ESP_LOGI(TAG,"MQTT server disconnected! Cancel auto ap shutdown..");
 	        		wifi_manager_set_auto_ap_shutdown(false);
 
-	                if (mqtt_config.auto_reconnect) {
+	                if (mqtt_config.auto_reconnect && (xEventGroupGetBits(mqtt_conn_event_group) & WIFI_CONNECTED_BIT) )  {
 	                	ESP_LOGI(TAG,"Setting timer to reconnect..");
 						/* Start the timer that will try to connect again */
 						xTimerStart( mqtt_manager_retry_timer, (TickType_t)0 );
