@@ -767,6 +767,9 @@ static void wifi_manager_event_handler(void* arg, esp_event_base_t event_base, i
 			ESP_LOGI(TAG, "WIFI_EVENT_AP_PROBEREQRECVED");
 			break;
 
+		default:
+			ESP_LOGI(TAG,"Other event: %d", event_id);
+
 		} /* end switch */
 	}
 	else if(event_base == IP_EVENT){
@@ -1119,7 +1122,7 @@ void wifi_manager( void * pvParameters ){
 	ESP_ERROR_CHECK(esp_wifi_start());
 
 	/* start http server */
-	http_app_start(false);
+	http_app_start(true);
 
 	/* wifi scanner config */
 	wifi_scan_config_t scan_config = {
@@ -1243,7 +1246,16 @@ void wifi_manager( void * pvParameters ){
 					if(uxBits & WIFI_MANAGER_SCAN_BIT){
 						esp_wifi_scan_stop();
 					}
-					ESP_ERROR_CHECK(esp_wifi_connect());
+					esp_err_t res = esp_wifi_connect();
+					if (res != ESP_OK) {
+						ESP_LOGE(TAG,"esp_wifi_connect failed %d", res - ESP_ERR_WIFI_BASE);
+
+						// let the disconnect code handle the internal error
+						wifi_event_sta_disconnected_t* wifi_event_sta_disconnected = (wifi_event_sta_disconnected_t*)malloc(sizeof(wifi_event_sta_disconnected_t));
+						wifi_event_sta_disconnected->reason = 1; // UNSPECIFIED;
+
+						wifi_manager_send_message(WM_EVENT_STA_DISCONNECTED, (void*)wifi_event_sta_disconnected);
+					}
 				}
 
 				/* callback */
@@ -1267,7 +1279,7 @@ void wifi_manager( void * pvParameters ){
 				 *  If WIFI_MANAGER_REQUEST_STA_CONNECT_BIT is set, We consider it's a client that requested the connection.
 				 *    When SYSTEM_EVENT_STA_DISCONNECTED is posted, it's probably a password/something went wrong with the handshake.
 				 *
-				 *  If WIFI_MANAGER_REQUEST_STA_CONNECT_BIT is set, it's a disconnection that was ASKED by the client (clicking disconnect in the app)
+				 *  If WIFI_MANAGER_REQUEST_DISCONNECT_BIT is set, it's a disconnection that was ASKED by the client (clicking disconnect in the app)
 				 *    When SYSTEM_EVENT_STA_DISCONNECTED is posted, saved wifi is erased from the NVS memory.
 				 *
 				 *  If WIFI_MANAGER_REQUEST_STA_CONNECT_BIT and WIFI_MANAGER_REQUEST_STA_CONNECT_BIT are NOT set, it's a lost connection

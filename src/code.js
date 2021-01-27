@@ -433,7 +433,7 @@ async function checkStatus(url = "status.json") {
   try {
     var response = await fetch(url);
     var data = await response.json();
-    if (data && data.hasOwnProperty("ssid") && data["ssid"] != "") {
+    if (data && data.hasOwnProperty("ssid")) {
       if (data["ssid"] === selectedSSID) {
         // Attempting connection
         switch (data["urc"]) {
@@ -481,9 +481,13 @@ async function checkStatus(url = "status.json") {
             break;
           case 2: // user disconnnect
           case 3: // lost connection
-            gel("mqtt-status").style.display = "none";
+            if (gel("wifi-status").style.display == "block") {
+              gel("wifi-status").style.display = "none";
+            }
+            if (gel("mqtt-status").style.display == "block") {
+              gel("mqtt-status").style.display = "none";
+            }
             break;
-
         }
       } else if (data.hasOwnProperty("urc") && data["urc"] === 0) {
         console.info("Connection established");

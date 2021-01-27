@@ -698,7 +698,6 @@ void mqtt_manager_start() {
 
 	if (mqtt_manager_fetch_config()) {
 		ESP_LOGI(TAG,"MQTT config reloaded succesfully. Starting AP temporarily...");
-		wifi_manager_set_auto_ap_shutdown(true);
 		wifi_manager_send_message(WM_ORDER_START_AP, NULL);
 	} else {
 		ESP_LOGW(TAG,"No MQTT config found. Starting AP..");
